@@ -99,7 +99,7 @@ async function loadSong(game, weather, hour24, signal) {
     if (window.location.href.startsWith("file:")) {
         return `songs/${dirName}/${fileName}`;
     } else {
-        const ipfsUrl = `ipfs://QmU8r6FoSr6YLaNCSn1yYVXoAcrEoM5pLNCYVqx8tCXFhA/${dirName}/${fileName}`;
+        const ipfsUrl = `ipfs://bafybeidq3jpqteqcirnnstx7pyrf4i2voaagrrhtaawlewvtv5heth5lqi/${dirName}/${fileName}`;
         console.log("Loading blob from IPFS...");
         const blob = await fetchIpfsBlob(ipfsUrl);
         console.log("Loaded blob from IPFS");
