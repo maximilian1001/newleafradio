@@ -66,18 +66,103 @@ function stopRadio() {
     abortOld("stop playback", null);
 }
 
+/**
+ * Converts a ReadableStream<Uint8Array> into a MediaSource.
+ *
+ * @param {ReadableStream<Uint8Array>} stream - The ReadableStream providing the media data.
+ * @param {string} mimeType - The MIME type of the media (e.g., 'audio/mpeg').
+ * @param {AbortSignal} [signal] - Optional AbortSignal to cancel the streaming.
+ * @returns {MediaSource} - A MediaSource that can be used with a media element.
+ */
+function streamToMediaSource(stream, mimeType, signal) {
+    // Create a new MediaSource
+    const mediaSource = new MediaSource();
+
+    // Set up the sourceopen event listener
+    mediaSource.addEventListener('sourceopen', () => {
+        try {
+            // Create a SourceBuffer for the given MIME type
+            const sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+
+            // Get a reader for the ReadableStream
+            const reader = stream.getReader();
+
+            // Helper function to wait for SourceBuffer to finish updating
+            const waitForUpdate = () => new Promise((resolve) => {
+                sourceBuffer.addEventListener('updateend', resolve, { once: true });
+            });
+
+            // Function to append chunks of data to the SourceBuffer
+            async function pump() {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    
+                    // Wait for the SourceBuffer to finish updating
+                    if (sourceBuffer.updating) {
+                        await waitForUpdate();
+                    }
+
+                    if (done || signal?.aborted) {
+                        // Signal that the stream has ended
+                        mediaSource.endOfStream();
+                    } else {
+                        // Append the chunk to the SourceBuffer
+                        while (true) {
+                            try {
+                                if (sourceBuffer.updating) {
+                                    await waitForUpdate();
+                                }
+                                sourceBuffer.appendBuffer(value);
+                                break;
+                            } catch (error) {
+                                if (error.name === 'QuotaExceededError') {
+                                    // Check again on the next time update
+                                    await new Promise(r => setTimeout(r, 1000));
+                                } else {
+                                    throw error;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Start pumping data into the SourceBuffer
+            pump().catch((error) => {
+                console.error('Error while streaming to MediaSource:', error);
+                if (mediaSource.readyState === 'open') {
+                    mediaSource.endOfStream();
+                }
+            });
+        } catch (error) {
+            console.error('Error during sourceopen:', error);
+            if (mediaSource.readyState === 'open') {
+                mediaSource.endOfStream();
+            }
+        }
+    }, { once: true });
+
+    return mediaSource;
+}
+
 async function fetchIpfsBlob(ipfsUrl, signal) {
     try {
         const verifiedFetch = await asyncVerifiedFetch;
         const response = await verifiedFetch(ipfsUrl, {signal: signal});
         console.log(response);
-        return await response.blob();
+        const body = response.body;
+        if (!body) {
+            throw new Error('empty body')
+        }
+        return body;
     } catch (error) {
         if (!signal.aborted) {
             console.error("Error loading blob from IPFS. Retrying...");
             console.error(error);
             await new Promise(r => setTimeout(r, 1000));
-            return await fetchIpfs(ipfsUrl);
+            if (!signal.aborted) {
+              return await fetchIpfsBlob(ipfsUrl, signal);
+            }
         }
     }
 }
@@ -101,9 +186,9 @@ async function loadSong(game, weather, hour24, signal) {
     } else {
         const ipfsUrl = `ipfs://bafybeidq3jpqteqcirnnstx7pyrf4i2voaagrrhtaawlewvtv5heth5lqi/${dirName}/${fileName}`;
         console.log("Loading blob from IPFS...");
-        const blob = await fetchIpfsBlob(ipfsUrl);
+        const body = await fetchIpfsBlob(ipfsUrl);
         console.log("Loaded blob from IPFS");
-        const blobUrl = URL.createObjectURL(blob, signal);
+        const blobUrl = URL.createObjectURL(streamToMediaSource(body, "audio/mpeg", signal), signal);
         signal.addEventListener("abort", () => {
             URL.revokeObjectURL(blobUrl);
         });
